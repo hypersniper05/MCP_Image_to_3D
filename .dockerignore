@@ -1,0 +1,16 @@
+# The build context is only server/, web/ and tools/; everything else only slows the build.
+data/
+logs/
+.venv/
+.venv-*/
+.research/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+.gitignore
+.env
+*.ply
+*.zip
+README.md
+LICENSE

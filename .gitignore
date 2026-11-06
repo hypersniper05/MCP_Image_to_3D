@@ -1,0 +1,28 @@
+# Runtime data: model weights, generated objects, uploads, job records
+data/
+logs/
+
+# Python
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated 3D files and archives
+*.ply
+*.zip
+
+# Local notes and research runs
+.research/
+
+# Environment and secrets
+.env
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

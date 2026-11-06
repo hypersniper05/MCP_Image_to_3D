@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/assets/icon.png">
+<title>MCP Image to 3D</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0d0f12; color: #e6e8ea; font: 14px/1.5 system-ui, sans-serif; overflow: hidden; }
+  #bar {
+    position: fixed; inset: 0 0 auto 0; z-index: 10; display: flex; gap: 12px; align-items: center;
+    padding: 10px 14px; background: linear-gradient(#0d0f12e6, #0d0f1200); pointer-events: none;
+  }
+  #bar > * { pointer-events: auto; }
+  #title { font-weight: 600; letter-spacing: .01em; }
+  #meta { color: #8b949e; font-size: 12px; }
+  .sp { flex: 1; }
+  a.btn, button.btn {
+    color: #e6e8ea; text-decoration: none; border: 1px solid #2b3138; background: #171a1f;
+    padding: 6px 12px; border-radius: 8px; font: inherit; cursor: pointer;
+  }
+  a.btn:hover, button.btn:hover { border-color: #4b5560; background: #1d2127; }
+  button.del { display: inline-flex; align-items: center; padding: 6px 9px; }
+  button.del:hover { border-color: #7a3b3b; background: #241619; color: #e08d8d; }
+  #hint { position: fixed; inset: auto 0 0 0; padding: 8px 14px; color: #6b7480; font-size: 12px;
+          background: linear-gradient(#0d0f1200, #0d0f12cc); pointer-events: none; }
+  /* On a light environment the overlay text has to stay readable. */
+  html.on-light #title, html.on-light a.btn, html.on-light button.btn { color: #1b2230; }
+  html.on-light a.btn, html.on-light button.btn { border-color: #b9c2cf; background: #ffffffcc; }
+  html.on-light a.btn:hover, html.on-light button.btn:hover { background: #fff; border-color: #7f8b9a; }
+  html.on-light #meta { color: #4a5462; }
+  html.on-light #hint { color: #4a5462; }
+  html.on-light #status { color: #4a5462; }
+  html.on-light #bar { background: linear-gradient(#ffffffcc, #ffffff00); }
+  html.on-light button.del:hover { color: #a33; border-color: #c99; background: #ffecec; }
+  #status { position: fixed; inset: 0; display: grid; place-items: center; color: #8b949e; z-index: 5; }
+  #status.hidden { display: none; }
+  /* embedded in the gallery's own frame: the gallery supplies the buttons */
+  body.bare #bar { display: none; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div>
+    <div id="title">MCP Image to 3D</div>
+    <div id="meta"></div>
+  </div>
+  <div class="sp"></div>
+  <button class="btn del" id="del" title="Delete this object" aria-label="Delete this object">
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm3 2v8h2v-8H9Zm4 0v8h2v-8h-2Z"/></svg>
+  </button>
+  <button class="btn" id="bg" title="Change the background - a neutral grey or light backdrop makes dark or pale objects much easier to judge">Background: Black</button>
+  <button class="btn" id="flip" title="Flip the up axis if the object appears on its side">Flip upright</button>
+  <a class="btn" id="dl" href="#" download>Download .ply</a>
+</div>
+<div id="status">Loading&hellip;</div>
+<div id="hint">Drag to orbit &middot; scroll to zoom &middot; right-drag to pan &middot; press B for another background</div>
+
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js" } }
+</script>
+<script type="module">
+const META = __META__;
+const params = new URLSearchParams(location.search);
+if (params.get('bare')) document.body.classList.add('bare');
+
+// Idol writes its PLY with the object's +Z rotated onto -Y, so -Y is up. If a
+// viewer shows the object lying on its face, the other convention is in play.
+const up = params.get('up') === 'y' ? [0, 1, 0] : [0, -1, 0];
+const dir = params.get('up') === 'y' ? -1 : 1;
+
+// The splats are opaque geometry on a flat clear colour, so a dark object vanishes
+// on black and a pale one on white. These are the four backdrops that make either
+// readable; the renderer is opaque, so it is a clear colour and not a CSS layer.
+const BGS = [
+  { id: 'black',  name: 'Black',  hex: '#000000', light: false },
+  { id: 'grey',   name: 'Grey',   hex: '#3f454e', light: false },
+  { id: 'light',  name: 'Light',  hex: '#dfe4ec', light: true },
+  { id: 'white',  name: 'White',  hex: '#ffffff', light: true },
+];
+let savedBg = null;
+try { savedBg = localStorage.bg; } catch (e) { /* private mode or sandboxed iframe */ }
+let bg = BGS.some(b => b.id === params.get('bg')) ? params.get('bg')
+       : (BGS.some(b => b.id === savedBg) ? savedBg : 'black');
+let applyBg = () => {};
+function setBg(id) {
+  bg = BGS.some(b => b.id === id) ? id : 'black';
+  try { localStorage.bg = bg; } catch (e) { /* not fatal */ }
+  applyBg(bg);
+}
+// The gallery embeds this page and drives the backdrop from its own toolbar, so a
+// switch never reloads the model.
+addEventListener('message', (e) => { if (e.data && e.data.type === 'bg') setBg(e.data.id); });
+addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'b' || e.target.tagName === 'INPUT') return;
+  setBg(BGS[(BGS.findIndex(b => b.id === bg) + 1) % BGS.length].id);
+});
+
+document.title = `MCP Image to 3D ${META.id}`;
+document.getElementById('title').textContent = 'MCP Image to 3D';
+document.getElementById('meta').textContent =
+  [META.splats ? META.splats.toLocaleString() + ' splats' : null,
+   META.params ? `seed ${META.params.seed} · ${META.params.steps} steps` : null,
+   META.seconds ? `${META.seconds}s` : null].filter(Boolean).join(' · ');
+document.getElementById('dl').href = META.ply;
+document.getElementById('del').onclick = async () => {
+  if (!confirm('Delete this object? Its 3D file, input image and thumbnail are removed for good.')) return;
+  const ok = (await fetch(`/objects/${META.id}`, { method: 'DELETE' })).ok;
+  if (ok) { location.href = '/'; return; }
+  alert('Could not delete this object.');
+};
+document.getElementById('flip').onclick = () => {
+  // Keep bare/bg/other query state when toggling the up axis.
+  const q = new URLSearchParams(location.search);
+  if (q.get('up') === 'y') q.delete('up'); else q.set('up', 'y');
+  const s = q.toString();
+  location.search = s ? `?${s}` : '';
+};
+
+// A module import or a worker can fail outside the addSplatScene promise chain.
+// Register these before the imports so the page never sits on "Loading" forever.
+const statusEl = document.getElementById('status');
+const showError = (msg) => {
+  statusEl.textContent = 'Could not display this object: ' + msg;
+  statusEl.classList.remove('hidden');
+};
+window.addEventListener('error', (e) => showError(e.message || 'unknown error'));
+window.addEventListener('unhandledrejection', (e) => {
+  showError((e.reason && e.reason.message) || e.reason || 'unknown error');
+});
+
+let THREE, GSL;
+try {
+  THREE = await import('three');
+  GSL = await import('/vendor/gaussian-splats-3d.module.min.js');
+} catch (err) {
+  showError(err.message || String(err));
+  throw err;
+}
+
+const viewer = new GSL.Viewer({
+  cameraUp: up,
+  initialCameraPosition: [1.35 * dir, -1.35 * dir, 0.95 * dir],
+  initialCameraLookAt: [0, 0, 0],
+  keyPressMoves: false,
+  // Its WASM sorter uses shared memory by default, which needs SharedArrayBuffer,
+  // which needs a cross-origin-isolated page - and Chrome ignores the isolation
+  // headers on plain HTTP. Use the non-shared sorter unless we really are isolated
+  // (localhost, or HTTPS), so the viewer works over plain HTTP on the LAN.
+  sharedMemoryForWorkers: self.crossOriginIsolated,
+});
+
+// Roughly half of Idol's splats sit below alpha 5/255 and read as haze.
+viewer.addSplatScene(META.ply, { splatAlphaRemovalThreshold: 5, showLoadingUI: false })
+  .then(() => {
+    statusEl.classList.add('hidden');
+    viewer.start();
+  })
+  .catch((err) => showError(err.message || String(err)));
+
+// GSL sets the clear colour once when it builds its renderer; from here on it is ours.
+const bgButton = document.getElementById('bg');
+applyBg = (id) => {
+  const b = BGS.find(x => x.id === id);
+  viewer.renderer.setClearColor(new THREE.Color(b.hex), 1);
+  document.documentElement.classList.toggle('on-light', b.light);
+  bgButton.textContent = 'Background: ' + b.name;
+  viewer.forceRenderNextFrame();
+};
+bgButton.onclick = () => setBg(BGS[(BGS.findIndex(b => b.id === bg) + 1) % BGS.length].id);
+setBg(bg);
+</script>
+</body>
+</html>
